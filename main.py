@@ -480,7 +480,7 @@ def main() -> None:
     config_path = Path("config.toml")
     config = load_config(config_path)
     pygame.init()
-    fullscreen = False
+    fullscreen = True
     screen, screen_rect = set_display_mode(fullscreen, config)
     pygame.display.set_caption("ShootyUppy - Click to shoot")
     clock = pygame.time.Clock()
@@ -491,6 +491,7 @@ def main() -> None:
     lightning_effects: List[Dict[str, object]] = []
     running = True
     # playing | choosing | game_over
+    powerup_mouse_block_until = 0.0
     powerup_choices: List[Powerup] = []
     powerup_card_rects: List[pygame.Rect] = []
     powerups = build_powerups()
@@ -506,6 +507,7 @@ def main() -> None:
             if effect["timer"] <= 0:
                 lightning_effects.remove(effect)
 
+        mouse_shoot_queued = False
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -528,15 +530,11 @@ def main() -> None:
                 )
                 pending_wave = None
                 powerup_choices = []
+                powerup_mouse_block_until = 0.0
                 powerup_card_rects = []
                 damage_flash_timer = 0.0
             if state == "playing" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                new_bullets = player.shoot(now)
-                for projectile in new_bullets:
-                    if isinstance(projectile, BouncyBall):
-                        bouncy_balls.add(projectile)
-                    else:
-                        player_bullets.add(projectile)
+                mouse_shoot_queued = True
             if state == "choosing" and event.type == pygame.KEYDOWN:
                 choice_index = None
                 if event.unicode in ("1", "2", "3"):
@@ -551,6 +549,8 @@ def main() -> None:
                     powerup_card_rects = []
                     ensure_bouncy_ball_active(player, bouncy_balls, screen_rect)
             if state == "choosing" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if now < powerup_mouse_block_until:
+                    continue
                 pos = pygame.Vector2(event.pos)
                 for idx, rect in enumerate(powerup_card_rects):
                     if rect.collidepoint(pos):
@@ -560,10 +560,14 @@ def main() -> None:
                         enemies = create_wave(pending_wave or wave, config, screen_rect)
                         pending_wave = None
                         powerup_choices = []
+                        powerup_mouse_block_until = 0.0
                         powerup_card_rects = []
                         ensure_bouncy_ball_active(player, bouncy_balls, screen_rect)
                         break
+                else:
+                    continue
 
+        mouse_pressed = pygame.mouse.get_pressed()
         keys = pygame.key.get_pressed()
         if state == "playing":
             direction = 0.0
@@ -572,6 +576,14 @@ def main() -> None:
             if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
                 direction += 1
             player.move(direction, dt, screen_rect)
+
+            if mouse_pressed[0] or mouse_shoot_queued:
+                new_bullets = player.shoot(now)
+                for projectile in new_bullets:
+                    if isinstance(projectile, BouncyBall):
+                        bouncy_balls.add(projectile)
+                    else:
+                        player_bullets.add(projectile)
 
             ensure_bouncy_ball_active(player, bouncy_balls, screen_rect)
             player_bullets.update(dt)
@@ -648,6 +660,7 @@ def main() -> None:
                     powerup_card_rects = build_powerup_card_rects(screen, len(powerup_choices))
                     state = "choosing"
                     pending_wave = wave
+                    powerup_mouse_block_until = now + 1.0
                 else:
                     enemies = create_wave(wave, config, screen_rect)
 
