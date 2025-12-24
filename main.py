@@ -50,6 +50,7 @@ ORANGE: Color = (255, 158, 89)
 CYAN: Color = (80, 226, 196)
 BACKGROUND: Color = (15, 16, 24)
 GREY: Color = (120, 120, 134)
+LIGHTNING_COLOR: Color = (142, 212, 255)
 
 DAMAGE_FLASH_DURATION = 0.25
 BASIC_ENEMY_SHAPE = "rectangle"
@@ -62,6 +63,7 @@ ENEMY_SHAPES = [
 BOUNCY_BALL_SIZE = 18
 BOUNCY_BALL_LIFETIME = 6.0
 BOUNCY_BALL_COLLISIONS = 10
+LIGHTNING_DURATION = 0.25
 
 
 def deep_update(base: Dict, override: Dict) -> Dict:
@@ -200,10 +202,6 @@ class Player(pygame.sprite.Sprite):
             diag_speed = self.bullet_speed * 0.75
             projectiles.append(Bullet(self.rect.midtop, (-diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
             projectiles.append(Bullet(self.rect.midtop, (diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
-        if self.has_bouncy_ball:
-            velocity = pygame.Vector2(self.bullet_speed * random.choice([-0.6, 0.6]), -self.bullet_speed * 0.75)
-            ball = BouncyBall(self.rect.midtop, velocity, self.bullet_damage * 0.5)
-            projectiles.append(ball)
         return projectiles
 
     def upgrade_damage(self, amount: int = 1) -> None:
@@ -309,7 +307,7 @@ def build_powerups() -> List[Powerup]:
         ),
         (
             "Bouncy Ball",
-            "Launch a bouncing orb for half bullet damage.",
+            "A bouncing orb patrols the arena for half bullet damage.",
             lambda player: setattr(player, "has_bouncy_ball", True),
         ),
     ]
@@ -345,23 +343,59 @@ def create_wave(wave: int, config: Dict[str, Dict[str, float]], screen_rect: pyg
     return enemies
 
 
+def build_lightning_polyline(start: pygame.Vector2, end: pygame.Vector2) -> List[pygame.Vector2]:
+    direction = end - start
+    length = direction.length()
+    if length == 0:
+        return [start, end]
+    direction = direction.normalize()
+    perpendicular = pygame.Vector2(-direction.y, direction.x)
+    segments = max(2, int(length // 35))
+    points = [start]
+    for i in range(1, segments):
+        t = i / segments
+        offset = perpendicular * random.uniform(-10, 10)
+        points.append(start + direction * length * t + offset)
+    points.append(end)
+    return points
+
+
 def chain_lightning_strike(
     start_enemy: Enemy, enemies: pygame.sprite.Group, damage: float, max_bounces: int = 4
-) -> None:
+) -> List[Tuple[pygame.Vector2, pygame.Vector2]]:
     remaining_targets = [e for e in enemies if e is not start_enemy]
     current_pos = pygame.Vector2(start_enemy.rect.center)
+    segments: List[Tuple[pygame.Vector2, pygame.Vector2]] = []
     for _ in range(max_bounces):
         if not remaining_targets:
             break
         target = min(remaining_targets, key=lambda e: pygame.Vector2(e.rect.center).distance_to(current_pos))
         target.health -= damage
         target_center = pygame.Vector2(target.rect.center)
+        segments.append((current_pos, target_center))
         current_pos = target_center
         if target.health <= 0:
             enemies.remove(target)
             remaining_targets = [e for e in remaining_targets if e is not target]
         else:
             remaining_targets = [e for e in remaining_targets if e is not target]
+    return segments
+
+
+def create_lightning_effect(segments: List[Tuple[pygame.Vector2, pygame.Vector2]]) -> List[List[pygame.Vector2]]:
+    return [build_lightning_polyline(start, end) for start, end in segments]
+
+
+def ensure_bouncy_ball_active(
+    player: Player, bouncy_balls: pygame.sprite.Group, screen_rect: pygame.Rect
+) -> None:
+    if not player.has_bouncy_ball or bouncy_balls:
+        return
+    velocity = pygame.Vector2(player.bullet_speed * random.choice([-0.7, 0.7]), -player.bullet_speed * 0.6)
+    ball = BouncyBall(player.rect.midtop, velocity, player.bullet_damage * 0.5)
+    # Keep the ball on screen if the player is near the edge.
+    ball.rect.clamp_ip(screen_rect)
+    bouncy_balls.add(ball)
 
 
 def draw_text(
@@ -446,6 +480,7 @@ def main() -> None:
     screen_rect = screen.get_rect()
 
     player, enemies, player_bullets, enemy_bullets, bouncy_balls, wave, state = reset_game(config, screen_rect)
+    lightning_effects: List[Dict[str, object]] = []
     running = True
     # playing | choosing | game_over
     powerup_choices: List[Powerup] = []
@@ -458,6 +493,10 @@ def main() -> None:
         dt = clock.tick(config["window"]["fps"]) / 1000.0
         now = pygame.time.get_ticks() / 1000.0
         damage_flash_timer = max(0.0, damage_flash_timer - dt)
+        for effect in list(lightning_effects):
+            effect["timer"] = float(effect["timer"]) - dt
+            if effect["timer"] <= 0:
+                lightning_effects.remove(effect)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -491,6 +530,7 @@ def main() -> None:
                     pending_wave = None
                     powerup_choices = []
                     powerup_card_rects = []
+                    ensure_bouncy_ball_active(player, bouncy_balls, screen_rect)
             if state == "choosing" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 pos = pygame.Vector2(event.pos)
                 for idx, rect in enumerate(powerup_card_rects):
@@ -502,6 +542,7 @@ def main() -> None:
                         pending_wave = None
                         powerup_choices = []
                         powerup_card_rects = []
+                        ensure_bouncy_ball_active(player, bouncy_balls, screen_rect)
                         break
 
         keys = pygame.key.get_pressed()
@@ -513,6 +554,7 @@ def main() -> None:
                 direction += 1
             player.move(direction, dt, screen_rect)
 
+            ensure_bouncy_ball_active(player, bouncy_balls, screen_rect)
             player_bullets.update(dt)
             enemy_bullets.update(dt)
             bouncy_balls.update(dt, screen_rect)
@@ -542,7 +584,11 @@ def main() -> None:
                         if hit.health <= 0:
                             enemies.remove(hit)
                     if player.has_chain_lightning and start_enemy:
-                        chain_lightning_strike(start_enemy, enemies, bullet.damage * 0.5)
+                        segments = chain_lightning_strike(start_enemy, enemies, bullet.damage * 0.5)
+                        if segments:
+                            lightning_effects.append(
+                                {"timer": LIGHTNING_DURATION, "polylines": create_lightning_effect(segments)}
+                            )
                     player_bullets.remove(bullet)
 
             # Collisions: bouncy balls vs enemies.
@@ -555,7 +601,11 @@ def main() -> None:
                         if hit.health <= 0:
                             enemies.remove(hit)
                     if player.has_chain_lightning and start_enemy:
-                        chain_lightning_strike(start_enemy, enemies, ball.damage * 0.5)
+                        segments = chain_lightning_strike(start_enemy, enemies, ball.damage * 0.5)
+                        if segments:
+                            lightning_effects.append(
+                                {"timer": LIGHTNING_DURATION, "polylines": create_lightning_effect(segments)}
+                            )
                     ball.on_collision()
 
             # Collisions: enemy bullets vs player.
@@ -599,6 +649,18 @@ def main() -> None:
         player_bullets.draw(screen)
         bouncy_balls.draw(screen)
         enemy_bullets.draw(screen)
+        for effect in lightning_effects:
+            intensity = max(0.0, min(1.0, float(effect["timer"]) / LIGHTNING_DURATION))
+            core_color = tuple(
+                int(LIGHTNING_COLOR[i] * intensity + WHITE[i] * (1.0 - intensity) * 0.5) for i in range(3)
+            )
+            glow_color = tuple(min(255, int(value * 1.15)) for value in core_color)
+            line_width = max(1, int(4 * intensity))
+            for polyline in effect["polylines"]:
+                points = [(int(point.x), int(point.y)) for point in polyline]
+                if len(points) >= 2:
+                    pygame.draw.lines(screen, glow_color, False, points, line_width + 2)
+                    pygame.draw.lines(screen, core_color, False, points, line_width)
 
         draw_text(screen, f"Wave: {wave}", font, WHITE, (16, 12))
         draw_text(screen, f"Health: {format_health(player.health)}/{format_health(player.max_health)}", font, WHITE, (16, 36))
