@@ -1,0 +1,7 @@
+main.py
+pyproject.toml
+shootyuppy.egg-info/PKG-INFO
+shootyuppy.egg-info/SOURCES.txt
+shootyuppy.egg-info/dependency_links.txt
+shootyuppy.egg-info/requires.txt
+shootyuppy.egg-info/top_level.txt
