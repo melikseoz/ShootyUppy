@@ -525,6 +525,30 @@ def draw_powerup_overlay(
         draw_text(surface, "Press number or click", font, BLUE, (card_rect.centerx, card_rect.bottom - 32), "center")
 
 
+def draw_pause_overlay(
+    surface: pygame.Surface,
+    font: pygame.font.Font,
+    title_font: pygame.font.Font,
+    collected_powerups: Dict[str, int],
+) -> None:
+    overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 180))
+    surface.blit(overlay, (0, 0))
+    draw_text(surface, "Paused", title_font, WHITE, (surface.get_width() // 2, 140), "center")
+    draw_text(surface, "Press P to resume", font, GREY, (surface.get_width() // 2, 180), "center")
+    draw_text(surface, "Upgrades collected", font, WHITE, (surface.get_width() // 2, 220), "center")
+
+    if not collected_powerups:
+        draw_text(surface, "No upgrades yet.", font, GREY, (surface.get_width() // 2, 260), "center")
+        return
+
+    start_y = 250
+    line_height = font.get_linesize() + 6
+    for idx, (name, count) in enumerate(collected_powerups.items()):
+        suffix = f" x{count}" if count > 1 else ""
+        draw_text(surface, f"{name}{suffix}", font, WHITE, (surface.get_width() // 2, start_y + idx * line_height), "center")
+
+
 def build_powerup_card_rects(surface: pygame.Surface, card_count: int) -> List[pygame.Rect]:
     card_width = 360
     spacing = 40
@@ -545,6 +569,7 @@ def reset_game(
     pygame.sprite.Group,
     int,
     str,
+    Dict[str, int],
 ]:
     player = Player(config["player"], screen_rect)
     enemies = create_wave(1, config, screen_rect)
@@ -553,7 +578,8 @@ def reset_game(
     bouncy_balls = pygame.sprite.Group()
     wave = 1
     state = "playing"
-    return player, enemies, player_bullets, enemy_bullets, bouncy_balls, wave, state
+    collected_powerups: Dict[str, int] = {}
+    return player, enemies, player_bullets, enemy_bullets, bouncy_balls, wave, state, collected_powerups
 
 
 def set_display_mode(fullscreen: bool, config: Dict[str, Dict[str, float]]) -> Tuple[pygame.Surface, pygame.Rect]:
@@ -575,16 +601,40 @@ def main() -> None:
     font = pygame.font.SysFont("arial", 20)
     title_font = pygame.font.SysFont("arial", 30, bold=True)
 
-    player, enemies, player_bullets, enemy_bullets, bouncy_balls, wave, state = reset_game(config, screen_rect)
+    (
+        player,
+        enemies,
+        player_bullets,
+        enemy_bullets,
+        bouncy_balls,
+        wave,
+        state,
+        collected_powerups,
+    ) = reset_game(config, screen_rect)
     lightning_effects: List[Dict[str, object]] = []
     running = True
-    # playing | choosing | game_over
+    # playing | choosing | paused | game_over
     powerup_mouse_block_until = 0.0
     powerup_choices: List[Powerup] = []
     powerup_card_rects: List[pygame.Rect] = []
     powerups = build_powerups()
     pending_wave: int | None = None
     damage_flash_timer = 0.0
+
+    def apply_powerup_choice(choice_index: int) -> None:
+        nonlocal state, enemies, pending_wave, powerup_choices, powerup_mouse_block_until, powerup_card_rects
+        if choice_index < 0 or choice_index >= len(powerup_choices):
+            return
+        name, _, apply_fn = powerup_choices[choice_index]
+        apply_fn(player)
+        collected_powerups[name] = collected_powerups.get(name, 0) + 1
+        state = "playing"
+        enemies = create_wave(pending_wave or wave, config, screen_rect)
+        pending_wave = None
+        powerup_choices = []
+        powerup_mouse_block_until = 0.0
+        powerup_card_rects = []
+        ensure_bouncy_ball_active(player, bouncy_balls, screen_rect)
 
     while running:
         dt = clock.tick(config["window"]["fps"]) / 1000.0
@@ -613,9 +663,16 @@ def main() -> None:
                 if state == "choosing":
                     powerup_card_rects = build_powerup_card_rects(screen, len(powerup_choices))
             if state == "game_over" and event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                player, enemies, player_bullets, enemy_bullets, bouncy_balls, wave, state = reset_game(
-                    config, screen_rect
-                )
+                (
+                    player,
+                    enemies,
+                    player_bullets,
+                    enemy_bullets,
+                    bouncy_balls,
+                    wave,
+                    state,
+                    collected_powerups,
+                ) = reset_game(config, screen_rect)
                 pending_wave = None
                 powerup_choices = []
                 powerup_mouse_block_until = 0.0
@@ -623,34 +680,24 @@ def main() -> None:
                 damage_flash_timer = 0.0
             if state == "playing" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mouse_shoot_queued = True
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_p:
+                if state == "playing":
+                    state = "paused"
+                elif state == "paused":
+                    state = "playing"
             if state == "choosing" and event.type == pygame.KEYDOWN:
                 choice_index = None
                 if event.unicode in ("1", "2", "3"):
                     choice_index = int(event.unicode) - 1
-                if choice_index is not None and choice_index < len(powerup_choices):
-                    _, _, apply_fn = powerup_choices[choice_index]
-                    apply_fn(player)
-                    state = "playing"
-                    enemies = create_wave(pending_wave or wave, config, screen_rect)
-                    pending_wave = None
-                    powerup_choices = []
-                    powerup_card_rects = []
-                    ensure_bouncy_ball_active(player, bouncy_balls, screen_rect)
+                if choice_index is not None:
+                    apply_powerup_choice(choice_index)
             if state == "choosing" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if now < powerup_mouse_block_until:
                     continue
                 pos = pygame.Vector2(event.pos)
                 for idx, rect in enumerate(powerup_card_rects):
                     if rect.collidepoint(pos):
-                        _, _, apply_fn = powerup_choices[idx]
-                        apply_fn(player)
-                        state = "playing"
-                        enemies = create_wave(pending_wave or wave, config, screen_rect)
-                        pending_wave = None
-                        powerup_choices = []
-                        powerup_mouse_block_until = 0.0
-                        powerup_card_rects = []
-                        ensure_bouncy_ball_active(player, bouncy_balls, screen_rect)
+                        apply_powerup_choice(idx)
                         break
                 else:
                     continue
@@ -784,7 +831,7 @@ def main() -> None:
                     pygame.draw.lines(screen, glow_color, False, points, line_width + 2)
                     pygame.draw.lines(screen, core_color, False, points, line_width)
 
-        draw_text(screen, f"Wave: {wave}", font, WHITE, (16, 12))
+        draw_text(screen, f"Wave: {wave} | Enemies: {len(enemies)}", font, WHITE, (16, 12))
         draw_text(screen, f"Health: {format_health(player.health)}/{format_health(player.max_health)}", font, WHITE, (16, 36))
         draw_text(screen, "Move: A/D or arrows | Click to shoot", font, GREY, (16, 60))
         draw_text(screen, "Press F11 to toggle fullscreen", font, GREY, (16, 84))
@@ -792,6 +839,8 @@ def main() -> None:
 
         if state == "choosing":
             draw_powerup_overlay(screen, font, title_font, powerup_choices, powerup_card_rects)
+        elif state == "paused":
+            draw_pause_overlay(screen, font, title_font, collected_powerups)
         elif state == "game_over":
             overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 180))
