@@ -367,6 +367,8 @@ def main() -> None:
         pygame.draw.rect(screen, GREY, (0, screen_rect.bottom - 12, screen_rect.width, 12))
         screen.blit(player.image, player.rect)
         enemies.draw(screen)
+        for enemy in enemies:
+            draw_text(screen, str(enemy.health), font, BACKGROUND, enemy.rect.center, "center")
         player_bullets.draw(screen)
         enemy_bullets.draw(screen)
 
