@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import pygame
 
@@ -45,8 +45,23 @@ GREEN: Color = (44, 204, 112)
 RED: Color = (229, 77, 66)
 YELLOW: Color = (242, 201, 76)
 BLUE: Color = (90, 178, 255)
+PURPLE: Color = (162, 90, 255)
+ORANGE: Color = (255, 158, 89)
+CYAN: Color = (80, 226, 196)
 BACKGROUND: Color = (15, 16, 24)
 GREY: Color = (120, 120, 134)
+
+DAMAGE_FLASH_DURATION = 0.25
+BASIC_ENEMY_SHAPE = "rectangle"
+ENEMY_SHAPES = [
+    ("rectangle", YELLOW),
+    ("triangle", ORANGE),
+    ("circle", CYAN),
+    ("diamond", PURPLE),
+]
+BOUNCY_BALL_SIZE = 18
+BOUNCY_BALL_LIFETIME = 6.0
+BOUNCY_BALL_COLLISIONS = 10
 
 
 def deep_update(base: Dict, override: Dict) -> Dict:
@@ -67,18 +82,80 @@ def load_config(path: Path) -> Dict[str, Dict[str, float]]:
     return config
 
 
+def format_health(value: float) -> str:
+    return str(int(round(value)))
+
+
+def build_enemy_surface(shape: str, color: Color) -> pygame.Surface:
+    width, height = 50, 30
+    surface = pygame.Surface((width, height), pygame.SRCALPHA)
+    rect = surface.get_rect()
+    if shape == "triangle":
+        points = [(rect.centerx, rect.top), (rect.right, rect.bottom), (rect.left, rect.bottom)]
+        pygame.draw.polygon(surface, color, points)
+    elif shape == "circle":
+        pygame.draw.ellipse(surface, color, rect)
+    elif shape == "diamond":
+        points = [(rect.centerx, rect.top), (rect.right, rect.centery), (rect.centerx, rect.bottom), (rect.left, rect.centery)]
+        pygame.draw.polygon(surface, color, points)
+    else:
+        pygame.draw.rect(surface, color, rect)
+    return surface
+
+
 class Bullet(pygame.sprite.Sprite):
-    def __init__(self, pos: Tuple[float, float], velocity: Tuple[float, float], color: Color, damage: int):
+    def __init__(
+        self,
+        pos: Tuple[float, float],
+        velocity: Tuple[float, float],
+        color: Color,
+        damage: float,
+        owner: pygame.sprite.Sprite | None = None,
+    ):
         super().__init__()
         self.image = pygame.Surface((6, 18))
         self.image.fill(color)
         self.rect = self.image.get_rect(center=pos)
         self.velocity = velocity
-        self.damage = damage
+        self.damage = float(damage)
+        self.owner = owner
 
     def update(self, dt: float) -> None:
         self.rect.x += self.velocity[0] * dt
         self.rect.y += self.velocity[1] * dt
+
+
+class BouncyBall(pygame.sprite.Sprite):
+    def __init__(self, pos: Tuple[float, float], velocity: pygame.Vector2, damage: float):
+        super().__init__()
+        self.image = pygame.Surface((BOUNCY_BALL_SIZE, BOUNCY_BALL_SIZE), pygame.SRCALPHA)
+        pygame.draw.circle(self.image, CYAN, (BOUNCY_BALL_SIZE // 2, BOUNCY_BALL_SIZE // 2), BOUNCY_BALL_SIZE // 2)
+        self.rect = self.image.get_rect(center=pos)
+        self.velocity = velocity
+        self.damage = float(damage)
+        self.lifetime = BOUNCY_BALL_LIFETIME
+        self.remaining_collisions = BOUNCY_BALL_COLLISIONS
+
+    def update(self, dt: float, screen_rect: pygame.Rect) -> None:
+        self.lifetime -= dt
+        if self.lifetime <= 0:
+            self.kill()
+            return
+
+        self.rect.x += self.velocity.x * dt
+        self.rect.y += self.velocity.y * dt
+
+        if self.rect.left <= screen_rect.left or self.rect.right >= screen_rect.right:
+            self.velocity.x *= -1
+            self.rect.clamp_ip(screen_rect)
+        if self.rect.top <= screen_rect.top or self.rect.bottom >= screen_rect.bottom:
+            self.velocity.y *= -1
+            self.rect.clamp_ip(screen_rect)
+
+    def on_collision(self) -> None:
+        self.remaining_collisions -= 1
+        if self.remaining_collisions <= 0:
+            self.kill()
 
 
 class Player(pygame.sprite.Sprite):
@@ -89,24 +166,28 @@ class Player(pygame.sprite.Sprite):
         self.image.fill(GREEN)
         start_y = screen_rect.bottom - config["bottom_margin"]
         self.rect = self.image.get_rect(midbottom=(screen_rect.centerx, start_y))
-        self.speed = config["speed"]
-        self.shoot_cooldown = config["shoot_cooldown"]
+        self.speed = float(config["speed"])
+        self.shoot_cooldown = float(config["shoot_cooldown"])
         self.last_shot_time = 0.0
-        self.bullet_speed = config["bullet_speed"]
-        self.bullet_damage = config["bullet_damage"]
+        self.bullet_speed = float(config["bullet_speed"])
+        self.bullet_damage = float(config["bullet_damage"])
         self.bullet_count = int(config["bullet_count"])
-        self.max_health = int(config["max_health"])
-        self.health = self.max_health
+        self.max_health = float(config["max_health"])
+        self.health = float(self.max_health)
+        self.has_split_shot = False
+        self.has_thorns = False
+        self.has_chain_lightning = False
+        self.has_bouncy_ball = False
 
     def move(self, direction: float, dt: float, screen_rect: pygame.Rect) -> None:
         self.rect.x += direction * self.speed * dt
         self.rect.clamp_ip(screen_rect)
 
-    def shoot(self, now: float) -> List[Bullet]:
+    def shoot(self, now: float) -> List[pygame.sprite.Sprite]:
         if now - self.last_shot_time < self.shoot_cooldown:
             return []
         self.last_shot_time = now
-        bullets: List[Bullet] = []
+        projectiles: List[pygame.sprite.Sprite] = []
         spread = 16
         offsets = [
             (i - (self.bullet_count - 1) / 2) * spread for i in range(self.bullet_count)
@@ -114,11 +195,19 @@ class Player(pygame.sprite.Sprite):
         for offset in offsets:
             pos = (self.rect.centerx + offset, self.rect.top)
             bullet = Bullet(pos, (0, -self.bullet_speed), BLUE, self.bullet_damage)
-            bullets.append(bullet)
-        return bullets
+            projectiles.append(bullet)
+        if self.has_split_shot:
+            diag_speed = self.bullet_speed * 0.75
+            projectiles.append(Bullet(self.rect.midtop, (-diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
+            projectiles.append(Bullet(self.rect.midtop, (diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
+        if self.has_bouncy_ball:
+            velocity = pygame.Vector2(self.bullet_speed * random.choice([-0.6, 0.6]), -self.bullet_speed * 0.75)
+            ball = BouncyBall(self.rect.midtop, velocity, self.bullet_damage * 0.5)
+            projectiles.append(ball)
+        return projectiles
 
     def upgrade_damage(self, amount: int = 1) -> None:
-        self.bullet_damage += amount
+        self.bullet_damage += float(amount)
 
     def upgrade_attack_speed(self, factor: float = 0.85) -> None:
         self.shoot_cooldown = max(0.05, self.shoot_cooldown * factor)
@@ -129,6 +218,9 @@ class Player(pygame.sprite.Sprite):
     def upgrade_speed(self, amount: float = 40.0) -> None:
         self.speed += amount
 
+    def heal_percentage(self, pct: float) -> None:
+        self.health = min(self.max_health, self.health + self.max_health * pct)
+
 
 class Enemy(pygame.sprite.Sprite):
     def __init__(
@@ -137,21 +229,22 @@ class Enemy(pygame.sprite.Sprite):
         config: Dict[str, float],
         speed_multiplier: float,
         health_multiplier: float,
+        shape: str,
+        color: Color,
     ):
         super().__init__()
         self.base_width = 50
         self.base_height = 30
-        self.image = pygame.Surface((self.base_width, self.base_height))
-        self.image.fill(YELLOW)
+        self.image = build_enemy_surface(shape, color)
         self.rect = self.image.get_rect(center=pos)
         self.direction = 1
-        self.speed = config["horizontal_speed"] * speed_multiplier
-        base_health = config["base_health"]
-        self.health = max(1, math.ceil(base_health * health_multiplier))
-        self.shoot_cooldown = config["shoot_cooldown"] / (0.8 + speed_multiplier * 0.2)
+        self.speed = float(config["horizontal_speed"]) * speed_multiplier
+        base_health = float(config["base_health"])
+        self.health = max(1.0, base_health * health_multiplier)
+        self.shoot_cooldown = float(config["shoot_cooldown"]) / (0.8 + speed_multiplier * 0.2)
         self.last_shot_time = 0.0
-        self.bullet_speed = config["bullet_speed"]
-        self.bullet_damage = config["bullet_damage"]
+        self.bullet_speed = float(config["bullet_speed"])
+        self.bullet_damage = float(config["bullet_damage"])
 
     def update(self, dt: float, screen_rect: pygame.Rect) -> None:
         self.rect.x += self.direction * self.speed * dt
@@ -165,11 +258,11 @@ class Enemy(pygame.sprite.Sprite):
         if random.random() < 0.25:
             self.last_shot_time = now
             pos = (self.rect.centerx, self.rect.bottom)
-            return Bullet(pos, (0, self.bullet_speed), RED, self.bullet_damage)
+            return Bullet(pos, (0, self.bullet_speed), RED, self.bullet_damage, owner=self)
         return None
 
 
-Powerup = Tuple[str, str, callable]
+Powerup = Tuple[str, str, Callable[[Player], None]]
 
 
 def build_powerups() -> List[Powerup]:
@@ -193,6 +286,31 @@ def build_powerups() -> List[Powerup]:
             "Increased Movement Speed",
             "+40 units movement speed.",
             lambda player: player.upgrade_speed(40.0),
+        ),
+        (
+            "Heal",
+            "Recover 40% of your max HP.",
+            lambda player: player.heal_percentage(0.4),
+        ),
+        (
+            "Split Shot",
+            "Gain two diagonal bullets each attack.",
+            lambda player: setattr(player, "has_split_shot", True),
+        ),
+        (
+            "Thorns",
+            "When hit, also destroy the attacking enemy.",
+            lambda player: setattr(player, "has_thorns", True),
+        ),
+        (
+            "Chain Lightning",
+            "Shots chain between 4 enemies for half damage.",
+            lambda player: setattr(player, "has_chain_lightning", True),
+        ),
+        (
+            "Bouncy Ball",
+            "Launch a bouncing orb for half bullet damage.",
+            lambda player: setattr(player, "has_bouncy_ball", True),
         ),
     ]
 
@@ -218,9 +336,32 @@ def create_wave(wave: int, config: Dict[str, Dict[str, float]], screen_rect: pyg
         x = padding + col * spacing
         y = start_y + row * spacing
         x = min(max(padding, x), screen_rect.width - padding)
-        enemy = Enemy((x, y), enemy_cfg, speed_multiplier, health_multiplier)
+        if wave >= 3:
+            shape, color = random.choice(ENEMY_SHAPES)
+        else:
+            shape, color = BASIC_ENEMY_SHAPE, YELLOW
+        enemy = Enemy((x, y), enemy_cfg, speed_multiplier, health_multiplier, shape, color)
         enemies.add(enemy)
     return enemies
+
+
+def chain_lightning_strike(
+    start_enemy: Enemy, enemies: pygame.sprite.Group, damage: float, max_bounces: int = 4
+) -> None:
+    remaining_targets = [e for e in enemies if e is not start_enemy]
+    current_pos = pygame.Vector2(start_enemy.rect.center)
+    for _ in range(max_bounces):
+        if not remaining_targets:
+            break
+        target = min(remaining_targets, key=lambda e: pygame.Vector2(e.rect.center).distance_to(current_pos))
+        target.health -= damage
+        target_center = pygame.Vector2(target.rect.center)
+        current_pos = target_center
+        if target.health <= 0:
+            enemies.remove(target)
+            remaining_targets = [e for e in remaining_targets if e is not target]
+        else:
+            remaining_targets = [e for e in remaining_targets if e is not target]
 
 
 def draw_text(
@@ -274,14 +415,23 @@ def build_powerup_card_rects(surface: pygame.Surface, card_count: int) -> List[p
 def reset_game(
     config: Dict[str, Dict[str, float]],
     screen_rect: pygame.Rect,
-) -> Tuple[Player, pygame.sprite.Group, pygame.sprite.Group, pygame.sprite.Group, int, str]:
+) -> Tuple[
+    Player,
+    pygame.sprite.Group,
+    pygame.sprite.Group,
+    pygame.sprite.Group,
+    pygame.sprite.Group,
+    int,
+    str,
+]:
     player = Player(config["player"], screen_rect)
     enemies = create_wave(1, config, screen_rect)
     player_bullets = pygame.sprite.Group()
     enemy_bullets = pygame.sprite.Group()
+    bouncy_balls = pygame.sprite.Group()
     wave = 1
     state = "playing"
-    return player, enemies, player_bullets, enemy_bullets, wave, state
+    return player, enemies, player_bullets, enemy_bullets, bouncy_balls, wave, state
 
 
 def main() -> None:
@@ -295,17 +445,19 @@ def main() -> None:
     title_font = pygame.font.SysFont("arial", 30, bold=True)
     screen_rect = screen.get_rect()
 
-    player, enemies, player_bullets, enemy_bullets, wave, state = reset_game(config, screen_rect)
+    player, enemies, player_bullets, enemy_bullets, bouncy_balls, wave, state = reset_game(config, screen_rect)
     running = True
     # playing | choosing | game_over
     powerup_choices: List[Powerup] = []
     powerup_card_rects: List[pygame.Rect] = []
     powerups = build_powerups()
     pending_wave: int | None = None
+    damage_flash_timer = 0.0
 
     while running:
         dt = clock.tick(config["window"]["fps"]) / 1000.0
         now = pygame.time.get_ticks() / 1000.0
+        damage_flash_timer = max(0.0, damage_flash_timer - dt)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -313,13 +465,20 @@ def main() -> None:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 running = False
             if state == "game_over" and event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                player, enemies, player_bullets, enemy_bullets, wave, state = reset_game(config, screen_rect)
+                player, enemies, player_bullets, enemy_bullets, bouncy_balls, wave, state = reset_game(
+                    config, screen_rect
+                )
                 pending_wave = None
                 powerup_choices = []
                 powerup_card_rects = []
+                damage_flash_timer = 0.0
             if state == "playing" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 new_bullets = player.shoot(now)
-                player_bullets.add(new_bullets)
+                for projectile in new_bullets:
+                    if isinstance(projectile, BouncyBall):
+                        bouncy_balls.add(projectile)
+                    else:
+                        player_bullets.add(projectile)
             if state == "choosing" and event.type == pygame.KEYDOWN:
                 choice_index = None
                 if event.unicode in ("1", "2", "3"):
@@ -356,6 +515,7 @@ def main() -> None:
 
             player_bullets.update(dt)
             enemy_bullets.update(dt)
+            bouncy_balls.update(dt, screen_rect)
             enemies.update(dt, screen_rect)
 
             # Remove bullets off-screen.
@@ -376,16 +536,36 @@ def main() -> None:
             for bullet in list(player_bullets):
                 hits = [e for e in enemies if e.rect.colliderect(bullet.rect)]
                 if hits:
+                    start_enemy = next((hit for hit in hits if hit in enemies), None)
                     for hit in hits:
                         hit.health -= bullet.damage
                         if hit.health <= 0:
                             enemies.remove(hit)
+                    if player.has_chain_lightning and start_enemy:
+                        chain_lightning_strike(start_enemy, enemies, bullet.damage * 0.5)
                     player_bullets.remove(bullet)
+
+            # Collisions: bouncy balls vs enemies.
+            for ball in list(bouncy_balls):
+                hits = [e for e in enemies if e.rect.colliderect(ball.rect)]
+                if hits:
+                    start_enemy = next((hit for hit in hits if hit in enemies), None)
+                    for hit in hits:
+                        hit.health -= ball.damage
+                        if hit.health <= 0:
+                            enemies.remove(hit)
+                    if player.has_chain_lightning and start_enemy:
+                        chain_lightning_strike(start_enemy, enemies, ball.damage * 0.5)
+                    ball.on_collision()
 
             # Collisions: enemy bullets vs player.
             for bullet in list(enemy_bullets):
                 if player.rect.colliderect(bullet.rect):
-                    player.health -= bullet.damage
+                    player.health = max(0.0, player.health - bullet.damage)
+                    damage_flash_timer = DAMAGE_FLASH_DURATION
+                    owner = getattr(bullet, "owner", None)
+                    if player.has_thorns and owner in enemies:
+                        enemies.remove(owner)
                     enemy_bullets.remove(bullet)
                     if player.health <= 0:
                         state = "game_over"
@@ -403,17 +583,25 @@ def main() -> None:
                     enemies = create_wave(wave, config, screen_rect)
 
         # Rendering
-        screen.fill(BACKGROUND)
+        if damage_flash_timer > 0:
+            intensity = damage_flash_timer / DAMAGE_FLASH_DURATION
+            background_color = tuple(
+                int(BACKGROUND[i] + (RED[i] - BACKGROUND[i]) * min(1.0, intensity)) for i in range(3)
+            )
+        else:
+            background_color = BACKGROUND
+        screen.fill(background_color)
         pygame.draw.rect(screen, GREY, (0, screen_rect.bottom - 12, screen_rect.width, 12))
         screen.blit(player.image, player.rect)
         enemies.draw(screen)
         for enemy in enemies:
-            draw_text(screen, str(enemy.health), font, BACKGROUND, enemy.rect.center, "center")
+            draw_text(screen, format_health(enemy.health), font, BACKGROUND, enemy.rect.center, "center")
         player_bullets.draw(screen)
+        bouncy_balls.draw(screen)
         enemy_bullets.draw(screen)
 
         draw_text(screen, f"Wave: {wave}", font, WHITE, (16, 12))
-        draw_text(screen, f"Health: {player.health}/{player.max_health}", font, WHITE, (16, 36))
+        draw_text(screen, f"Health: {format_health(player.health)}/{format_health(player.max_health)}", font, WHITE, (16, 36))
         draw_text(screen, "Move: A/D or arrows | Click to shoot", font, GREY, (16, 60))
         draw_text(screen, "Powerup every 2 waves | Survive the barrage!", font, GREY, (16, 84))
 
