@@ -199,7 +199,7 @@ class Player(pygame.sprite.Sprite):
             bullet = Bullet(pos, (0, -self.bullet_speed), BLUE, self.bullet_damage)
             projectiles.append(bullet)
         if self.has_split_shot:
-            diag_speed = self.bullet_speed * 0.75
+            diag_speed = self.bullet_speed * 0.6
             projectiles.append(Bullet(self.rect.midtop, (-diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
             projectiles.append(Bullet(self.rect.midtop, (diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
         return projectiles
@@ -654,7 +654,7 @@ def main() -> None:
             # Wave cleared?
             if not enemies and state == "playing":
                 wave += 1
-                should_choose_powerup = wave > 1 and (wave - 1) % 2 == 0
+                should_choose_powerup = wave % 2 == 0
                 if should_choose_powerup:
                     powerup_choices = random.sample(powerups, 3)
                     powerup_card_rects = build_powerup_card_rects(screen, len(powerup_choices))
