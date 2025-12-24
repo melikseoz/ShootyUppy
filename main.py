@@ -368,8 +368,9 @@ def create_wave(wave: int, config: Dict[str, Dict[str, float]], screen_rect: pyg
     bullet_count = 1
     max_multiplier = float(config["wave"].get("max_enemy_multiplier", 6))
     if total > base_total * max_multiplier:
-        total = base_total
-        health_multiplier *= max_multiplier
+        additional = math.ceil((base_total * config["wave"]["count_scaling"] * (wave - 1))/max_multiplier)
+        total = base_total + additional
+        health_multiplier *= max_multiplier * 3
         bullet_count *= 2
     spacing = enemy_cfg["spacing"]
     start_y = enemy_cfg["start_y"]
