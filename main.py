@@ -60,7 +60,7 @@ ENEMY_SHAPES = [
     ("circle", CYAN),
     ("diamond", PURPLE),
 ]
-BOUNCY_BALL_SIZE = 18
+BOUNCY_BALL_SIZE = 36
 BOUNCY_BALL_LIFETIME = 6.0
 BOUNCY_BALL_COLLISIONS = 10
 LIGHTNING_DURATION = 0.25
@@ -468,16 +468,24 @@ def reset_game(
     return player, enemies, player_bullets, enemy_bullets, bouncy_balls, wave, state
 
 
+def set_display_mode(fullscreen: bool, config: Dict[str, Dict[str, float]]) -> Tuple[pygame.Surface, pygame.Rect]:
+    if fullscreen:
+        screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    else:
+        screen = pygame.display.set_mode((int(config["window"]["width"]), int(config["window"]["height"])))
+    return screen, screen.get_rect()
+
+
 def main() -> None:
     config_path = Path("config.toml")
     config = load_config(config_path)
     pygame.init()
-    screen = pygame.display.set_mode((int(config["window"]["width"]), int(config["window"]["height"])))
+    fullscreen = False
+    screen, screen_rect = set_display_mode(fullscreen, config)
     pygame.display.set_caption("ShootyUppy - Click to shoot")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("arial", 20)
     title_font = pygame.font.SysFont("arial", 30, bold=True)
-    screen_rect = screen.get_rect()
 
     player, enemies, player_bullets, enemy_bullets, bouncy_balls, wave, state = reset_game(config, screen_rect)
     lightning_effects: List[Dict[str, object]] = []
@@ -503,6 +511,17 @@ def main() -> None:
                 running = False
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 running = False
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                fullscreen = not fullscreen
+                screen, screen_rect = set_display_mode(fullscreen, config)
+                pygame.display.set_caption("ShootyUppy - Click to shoot")
+                player.rect.clamp_ip(screen_rect)
+                for sprite in enemies:
+                    sprite.rect.clamp_ip(screen_rect)
+                for ball in bouncy_balls:
+                    ball.rect.clamp_ip(screen_rect)
+                if state == "choosing":
+                    powerup_card_rects = build_powerup_card_rects(screen, len(powerup_choices))
             if state == "game_over" and event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                 player, enemies, player_bullets, enemy_bullets, bouncy_balls, wave, state = reset_game(
                     config, screen_rect
@@ -665,7 +684,8 @@ def main() -> None:
         draw_text(screen, f"Wave: {wave}", font, WHITE, (16, 12))
         draw_text(screen, f"Health: {format_health(player.health)}/{format_health(player.max_health)}", font, WHITE, (16, 36))
         draw_text(screen, "Move: A/D or arrows | Click to shoot", font, GREY, (16, 60))
-        draw_text(screen, "Powerup every 2 waves | Survive the barrage!", font, GREY, (16, 84))
+        draw_text(screen, "Press F11 to toggle fullscreen", font, GREY, (16, 84))
+        draw_text(screen, "Powerup every 2 waves | Survive the barrage!", font, GREY, (16, 108))
 
         if state == "choosing":
             draw_powerup_overlay(screen, font, title_font, powerup_choices, powerup_card_rects)
