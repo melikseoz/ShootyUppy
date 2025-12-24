@@ -36,7 +36,12 @@ DEFAULT_CONFIG: Dict[str, Dict[str, float]] = {
         "padding": 60,
         "base_health": 2,
     },
-    "wave": {"speed_scaling": 0.12, "health_scaling": 0.6, "count_scaling": 0.12},
+    "wave": {
+        "speed_scaling": 0.12,
+        "health_scaling": 0.6,
+        "count_scaling": 0.12,
+        "max_enemy_multiplier": 6.0,
+    },
 }
 
 Color = Tuple[int, int, int]
@@ -248,6 +253,7 @@ class Enemy(pygame.sprite.Sprite):
         health_multiplier: float,
         shape: str,
         color: Color,
+        bullet_count: int = 1,
     ):
         super().__init__()
         self.base_width = 50
@@ -262,21 +268,38 @@ class Enemy(pygame.sprite.Sprite):
         self.last_shot_time = 0.0
         self.bullet_speed = float(config["bullet_speed"])
         self.bullet_damage = float(config["bullet_damage"])
+        self.bullet_count = max(1, int(bullet_count))
 
     def update(self, dt: float, screen_rect: pygame.Rect) -> None:
         self.rect.x += self.direction * self.speed * dt
         if self.rect.left <= screen_rect.left + 20 or self.rect.right >= screen_rect.right - 20:
             self.direction *= -1
 
-    def try_shoot(self, now: float) -> Bullet | None:
+    @staticmethod
+    def _build_offsets(count: int, spread: float) -> List[float]:
+        if count <= 0:
+            return []
+        return [(i - (count - 1) / 2) * spread for i in range(count)]
+
+    def try_shoot(self, now: float) -> List[Bullet]:
         if now - self.last_shot_time < self.shoot_cooldown:
-            return None
+            return []
         # Slight randomness so not all enemies fire simultaneously.
         if random.random() < 0.25:
             self.last_shot_time = now
-            pos = (self.rect.centerx, self.rect.bottom)
-            return Bullet(pos, (0, self.bullet_speed), RED, self.bullet_damage, owner=self)
-        return None
+            spread = 12
+            offsets = self._build_offsets(self.bullet_count, spread)
+            return [
+                Bullet(
+                    (self.rect.centerx + offset, self.rect.bottom),
+                    (0, self.bullet_speed),
+                    RED,
+                    self.bullet_damage,
+                    owner=self,
+                )
+                for offset in offsets
+            ]
+        return []
 
 
 Powerup = Tuple[str, str, Callable[[Player], None]]
@@ -342,6 +365,12 @@ def create_wave(wave: int, config: Dict[str, Dict[str, float]], screen_rect: pyg
     total = base_total + additional
     speed_multiplier = 1 + (wave - 1) * config["wave"]["speed_scaling"]
     health_multiplier = 1 + (wave - 1) * config["wave"]["health_scaling"]
+    bullet_count = 1
+    max_multiplier = float(config["wave"].get("max_enemy_multiplier", 6))
+    if total > base_total * max_multiplier:
+        total = base_total
+        health_multiplier *= max_multiplier
+        bullet_count *= 2
     spacing = enemy_cfg["spacing"]
     start_y = enemy_cfg["start_y"]
     padding = enemy_cfg["padding"]
@@ -357,7 +386,7 @@ def create_wave(wave: int, config: Dict[str, Dict[str, float]], screen_rect: pyg
             shape, color = random.choice(ENEMY_SHAPES)
         else:
             shape, color = BASIC_ENEMY_SHAPE, YELLOW
-        enemy = Enemy((x, y), enemy_cfg, speed_multiplier, health_multiplier, shape, color)
+        enemy = Enemy((x, y), enemy_cfg, speed_multiplier, health_multiplier, shape, color, bullet_count)
         enemies.add(enemy)
     return enemies
 
@@ -660,9 +689,9 @@ def main() -> None:
 
             # Enemy shooting back.
             for enemy in enemies:
-                shot = enemy.try_shoot(now)
-                if shot:
-                    enemy_bullets.add(shot)
+                shots = enemy.try_shoot(now)
+                if shots:
+                    enemy_bullets.add(*shots)
 
             # Collisions: player bullets vs enemies.
             for bullet in list(player_bullets):
