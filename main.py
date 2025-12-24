@@ -228,7 +228,7 @@ class Player(pygame.sprite.Sprite):
     def upgrade_bullet_count(self, amount: int = 1, cap: int = 6) -> None:
         self.bullet_count = min(cap, self.bullet_count + amount)
 
-    def upgrade_speed(self, amount: float = 40.0) -> None:
+    def upgrade_speed(self, amount: float = 100.0) -> None:
         self.speed += amount
 
     def heal_percentage(self, pct: float) -> None:
@@ -287,7 +287,7 @@ class Enemy(pygame.sprite.Sprite):
         # Slight randomness so not all enemies fire simultaneously.
         if random.random() < 0.25:
             self.last_shot_time = now
-            spread = 12
+            spread = 24
             offsets = self._build_offsets(self.bullet_count, spread)
             return [
                 Bullet(
@@ -314,8 +314,8 @@ def build_powerups() -> List[Powerup]:
         ),
         (
             "Increased Attack Speed",
-            "Fire faster by 15%.",
-            lambda player: player.upgrade_attack_speed(0.85),
+            "Fire faster by 25%.",
+            lambda player: player.upgrade_attack_speed(0.75),
         ),
         (
             "Increased Number of Bullets",
@@ -324,8 +324,8 @@ def build_powerups() -> List[Powerup]:
         ),
         (
             "Increased Movement Speed",
-            "+40 units movement speed.",
-            lambda player: player.upgrade_speed(40.0),
+            "+100 units movement speed.",
+            lambda player: player.upgrade_speed(100.0),
         ),
         (
             "Heal",
