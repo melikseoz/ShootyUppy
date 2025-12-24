@@ -1,0 +1,30 @@
+[window]
+width = 960
+height = 720
+fps = 60
+
+[player]
+speed = 360.0
+shoot_cooldown = 0.25
+bullet_speed = 900.0
+bullet_damage = 1
+bullet_count = 1
+max_health = 5
+bottom_margin = 32
+
+[enemy]
+rows = 3
+cols = 6
+horizontal_speed = 120.0
+shoot_cooldown = 1.5
+bullet_speed = 360.0
+bullet_damage = 1
+spacing = 96
+start_y = 90
+padding = 60
+base_health = 2
+
+[wave]
+speed_scaling = 0.12
+health_scaling = 0.6
+count_scaling = 0.12
