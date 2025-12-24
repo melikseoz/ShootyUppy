@@ -28,3 +28,4 @@ base_health = 1
 speed_scaling = 0.12
 health_scaling = 0.6
 count_scaling = 0.12
+max_enemy_multiplier = 6.0
