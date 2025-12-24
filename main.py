@@ -241,24 +241,47 @@ def draw_powerup_overlay(
     font: pygame.font.Font,
     title_font: pygame.font.Font,
     choices: List[Powerup],
+    card_rects: List[pygame.Rect],
 ) -> None:
     overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, 180))
     surface.blit(overlay, (0, 0))
-    draw_text(surface, "Choose a powerup (press 1-3)", title_font, WHITE, (surface.get_width() // 2, 120), "center")
-    card_width = 360
-    spacing = 40
-    total_width = card_width * len(choices) + spacing * (len(choices) - 1)
-    start_x = (surface.get_width() - total_width) // 2
-    top = 200
-    for idx, (name, desc, _) in enumerate(choices):
-        x = start_x + idx * (card_width + spacing)
-        card_rect = pygame.Rect(x, top, card_width, 180)
+    draw_text(
+        surface,
+        "Choose a powerup (press 1-3 or click)",
+        title_font,
+        WHITE,
+        (surface.get_width() // 2, 120),
+        "center",
+    )
+    for idx, (card_rect, (name, desc, _)) in enumerate(zip(card_rects, choices)):
         pygame.draw.rect(surface, GREY, card_rect, border_radius=10)
         pygame.draw.rect(surface, WHITE, card_rect, width=2, border_radius=10)
         draw_text(surface, f"{idx + 1}. {name}", font, WHITE, (card_rect.centerx, card_rect.top + 16), "center")
         draw_text(surface, desc, font, WHITE, (card_rect.centerx, card_rect.centery), "center")
-        draw_text(surface, "Press number", font, BLUE, (card_rect.centerx, card_rect.bottom - 32), "center")
+        draw_text(surface, "Press number or click", font, BLUE, (card_rect.centerx, card_rect.bottom - 32), "center")
+
+
+def build_powerup_card_rects(surface: pygame.Surface, card_count: int) -> List[pygame.Rect]:
+    card_width = 360
+    spacing = 40
+    total_width = card_width * card_count + spacing * (card_count - 1)
+    start_x = (surface.get_width() - total_width) // 2
+    top = 200
+    return [pygame.Rect(start_x + idx * (card_width + spacing), top, card_width, 180) for idx in range(card_count)]
+
+
+def reset_game(
+    config: Dict[str, Dict[str, float]],
+    screen_rect: pygame.Rect,
+) -> Tuple[Player, pygame.sprite.Group, pygame.sprite.Group, pygame.sprite.Group, int, str]:
+    player = Player(config["player"], screen_rect)
+    enemies = create_wave(1, config, screen_rect)
+    player_bullets = pygame.sprite.Group()
+    enemy_bullets = pygame.sprite.Group()
+    wave = 1
+    state = "playing"
+    return player, enemies, player_bullets, enemy_bullets, wave, state
 
 
 def main() -> None:
@@ -272,14 +295,11 @@ def main() -> None:
     title_font = pygame.font.SysFont("arial", 30, bold=True)
     screen_rect = screen.get_rect()
 
-    player = Player(config["player"], screen_rect)
-    enemies = create_wave(1, config, screen_rect)
-    player_bullets = pygame.sprite.Group()
-    enemy_bullets = pygame.sprite.Group()
-    wave = 1
+    player, enemies, player_bullets, enemy_bullets, wave, state = reset_game(config, screen_rect)
     running = True
-    state = "playing"  # playing | choosing | game_over
+    # playing | choosing | game_over
     powerup_choices: List[Powerup] = []
+    powerup_card_rects: List[pygame.Rect] = []
     powerups = build_powerups()
     pending_wave: int | None = None
 
@@ -292,6 +312,11 @@ def main() -> None:
                 running = False
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 running = False
+            if state == "game_over" and event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+                player, enemies, player_bullets, enemy_bullets, wave, state = reset_game(config, screen_rect)
+                pending_wave = None
+                powerup_choices = []
+                powerup_card_rects = []
             if state == "playing" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 new_bullets = player.shoot(now)
                 player_bullets.add(new_bullets)
@@ -305,6 +330,20 @@ def main() -> None:
                     state = "playing"
                     enemies = create_wave(pending_wave or wave, config, screen_rect)
                     pending_wave = None
+                    powerup_choices = []
+                    powerup_card_rects = []
+            if state == "choosing" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                pos = pygame.Vector2(event.pos)
+                for idx, rect in enumerate(powerup_card_rects):
+                    if rect.collidepoint(pos):
+                        _, _, apply_fn = powerup_choices[idx]
+                        apply_fn(player)
+                        state = "playing"
+                        enemies = create_wave(pending_wave or wave, config, screen_rect)
+                        pending_wave = None
+                        powerup_choices = []
+                        powerup_card_rects = []
+                        break
 
         keys = pygame.key.get_pressed()
         if state == "playing":
@@ -357,6 +396,7 @@ def main() -> None:
                 should_choose_powerup = wave > 1 and (wave - 1) % 2 == 0
                 if should_choose_powerup:
                     powerup_choices = random.sample(powerups, 3)
+                    powerup_card_rects = build_powerup_card_rects(screen, len(powerup_choices))
                     state = "choosing"
                     pending_wave = wave
                 else:
@@ -378,13 +418,20 @@ def main() -> None:
         draw_text(screen, "Powerup every 2 waves | Survive the barrage!", font, GREY, (16, 84))
 
         if state == "choosing":
-            draw_powerup_overlay(screen, font, title_font, powerup_choices)
+            draw_powerup_overlay(screen, font, title_font, powerup_choices, powerup_card_rects)
         elif state == "game_over":
             overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 180))
             screen.blit(overlay, (0, 0))
             draw_text(screen, "Game Over", title_font, RED, screen_rect.center, "center")
-            draw_text(screen, "Press ESC to exit", font, WHITE, (screen_rect.centerx, screen_rect.centery + 40), "center")
+            draw_text(
+                screen,
+                "Press R to restart or ESC to exit",
+                font,
+                WHITE,
+                (screen_rect.centerx, screen_rect.centery + 40),
+                "center",
+            )
 
         pygame.display.flip()
 
