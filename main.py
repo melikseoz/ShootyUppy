@@ -246,7 +246,7 @@ def draw_powerup_overlay(
     overlay.fill((0, 0, 0, 180))
     surface.blit(overlay, (0, 0))
     draw_text(surface, "Choose a powerup (press 1-3)", title_font, WHITE, (surface.get_width() // 2, 120), "center")
-    card_width = 260
+    card_width = 360
     spacing = 40
     total_width = card_width * len(choices) + spacing * (len(choices) - 1)
     start_x = (surface.get_width() - total_width) // 2

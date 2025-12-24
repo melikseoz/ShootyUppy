@@ -1,6 +1,6 @@
 [window]
-width = 960
-height = 720
+width = 1920
+height = 1080
 fps = 60
 
 [player]
@@ -22,7 +22,7 @@ bullet_damage = 1
 spacing = 96
 start_y = 90
 padding = 60
-base_health = 2
+base_health = 1
 
 [wave]
 speed_scaling = 0.12
