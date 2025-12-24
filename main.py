@@ -176,10 +176,16 @@ class Player(pygame.sprite.Sprite):
         self.bullet_count = int(config["bullet_count"])
         self.max_health = float(config["max_health"])
         self.health = float(self.max_health)
-        self.has_split_shot = False
+        self.diagonal_shot_stacks = 0
         self.has_thorns = False
-        self.has_chain_lightning = False
-        self.has_bouncy_ball = False
+        self.chain_lightning_count = 0
+        self.bouncy_ball_count = 0
+
+    @staticmethod
+    def _build_offsets(count: int, spread: float) -> List[float]:
+        if count <= 0:
+            return []
+        return [(i - (count - 1) / 2) * spread for i in range(count)]
 
     def move(self, direction: float, dt: float, screen_rect: pygame.Rect) -> None:
         self.rect.x += direction * self.speed * dt
@@ -191,17 +197,21 @@ class Player(pygame.sprite.Sprite):
         self.last_shot_time = now
         projectiles: List[pygame.sprite.Sprite] = []
         spread = 16
-        offsets = [
-            (i - (self.bullet_count - 1) / 2) * spread for i in range(self.bullet_count)
-        ]
+        offsets = self._build_offsets(self.bullet_count, spread)
         for offset in offsets:
             pos = (self.rect.centerx + offset, self.rect.top)
             bullet = Bullet(pos, (0, -self.bullet_speed), BLUE, self.bullet_damage)
             projectiles.append(bullet)
-        if self.has_split_shot:
+        if self.diagonal_shot_stacks > 0:
             diag_speed = self.bullet_speed * 0.6
-            projectiles.append(Bullet(self.rect.midtop, (-diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
-            projectiles.append(Bullet(self.rect.midtop, (diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
+            diag_per_side = self.bullet_count * self.diagonal_shot_stacks
+            diag_offsets = self._build_offsets(diag_per_side, spread)
+            for offset in diag_offsets:
+                pos = (self.rect.centerx + offset, self.rect.top)
+                projectiles.append(Bullet(pos, (-diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
+            for offset in diag_offsets:
+                pos = (self.rect.centerx + offset, self.rect.top)
+                projectiles.append(Bullet(pos, (diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
         return projectiles
 
     def upgrade_damage(self, amount: int = 1) -> None:
@@ -218,6 +228,15 @@ class Player(pygame.sprite.Sprite):
 
     def heal_percentage(self, pct: float) -> None:
         self.health = min(self.max_health, self.health + self.max_health * pct)
+
+    def add_diagonal_shot(self) -> None:
+        self.diagonal_shot_stacks += 1
+
+    def add_chain_lightning(self) -> None:
+        self.chain_lightning_count += 1
+
+    def add_bouncy_ball(self) -> None:
+        self.bouncy_ball_count += 1
 
 
 class Enemy(pygame.sprite.Sprite):
@@ -293,7 +312,7 @@ def build_powerups() -> List[Powerup]:
         (
             "Split Shot",
             "Gain two diagonal bullets each attack.",
-            lambda player: setattr(player, "has_split_shot", True),
+            lambda player: player.add_diagonal_shot(),
         ),
         (
             "Thorns",
@@ -303,12 +322,12 @@ def build_powerups() -> List[Powerup]:
         (
             "Chain Lightning",
             "Shots chain between 4 enemies for half damage.",
-            lambda player: setattr(player, "has_chain_lightning", True),
+            lambda player: player.add_chain_lightning(),
         ),
         (
             "Bouncy Ball",
             "A bouncing orb patrols the arena for half bullet damage.",
-            lambda player: setattr(player, "has_bouncy_ball", True),
+            lambda player: player.add_bouncy_ball(),
         ),
     ]
 
@@ -389,13 +408,13 @@ def create_lightning_effect(segments: List[Tuple[pygame.Vector2, pygame.Vector2]
 def ensure_bouncy_ball_active(
     player: Player, bouncy_balls: pygame.sprite.Group, screen_rect: pygame.Rect
 ) -> None:
-    if not player.has_bouncy_ball or bouncy_balls:
-        return
-    velocity = pygame.Vector2(player.bullet_speed * random.choice([-0.7, 0.7]), -player.bullet_speed * 0.6)
-    ball = BouncyBall(player.rect.midtop, velocity, player.bullet_damage * 0.5)
-    # Keep the ball on screen if the player is near the edge.
-    ball.rect.clamp_ip(screen_rect)
-    bouncy_balls.add(ball)
+    desired_count = player.bouncy_ball_count
+    while len(bouncy_balls) < desired_count:
+        velocity = pygame.Vector2(player.bullet_speed * random.choice([-0.7, 0.7]), -player.bullet_speed * 0.6)
+        ball = BouncyBall(player.rect.midtop, velocity, player.bullet_damage * 0.5)
+        # Keep the ball on screen if the player is near the edge.
+        ball.rect.clamp_ip(screen_rect)
+        bouncy_balls.add(ball)
 
 
 def draw_text(
@@ -409,6 +428,45 @@ def draw_text(
     rendered = font.render(text, True, color)
     rect = rendered.get_rect(**{align: pos})
     surface.blit(rendered, rect)
+
+
+def wrap_text(text: str, font: pygame.font.Font, max_width: int) -> List[str]:
+    words = text.split()
+    lines: List[str] = []
+    current = ""
+    for word in words:
+        next_line = word if not current else f"{current} {word}"
+        if font.size(next_line)[0] <= max_width:
+            current = next_line
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def draw_wrapped_text(
+    surface: pygame.Surface,
+    text: str,
+    font: pygame.font.Font,
+    color: Color,
+    rect: pygame.Rect,
+    line_spacing: int = 4,
+) -> None:
+    max_width = max(0, rect.width)
+    lines = wrap_text(text, font, max_width)
+    if not lines:
+        return
+    line_height = font.get_linesize()
+    total_height = line_height * len(lines) + line_spacing * (len(lines) - 1)
+    y = rect.centery - total_height / 2
+    for line in lines:
+        rendered = font.render(line, True, color)
+        text_rect = rendered.get_rect(center=(rect.centerx, int(y + line_height / 2)))
+        surface.blit(rendered, text_rect)
+        y += line_height + line_spacing
 
 
 def draw_powerup_overlay(
@@ -433,7 +491,8 @@ def draw_powerup_overlay(
         pygame.draw.rect(surface, GREY, card_rect, border_radius=10)
         pygame.draw.rect(surface, WHITE, card_rect, width=2, border_radius=10)
         draw_text(surface, f"{idx + 1}. {name}", font, WHITE, (card_rect.centerx, card_rect.top + 16), "center")
-        draw_text(surface, desc, font, WHITE, (card_rect.centerx, card_rect.centery), "center")
+        desc_rect = card_rect.inflate(-32, -72)
+        draw_wrapped_text(surface, desc, font, WHITE, desc_rect)
         draw_text(surface, "Press number or click", font, BLUE, (card_rect.centerx, card_rect.bottom - 32), "center")
 
 
@@ -614,12 +673,13 @@ def main() -> None:
                         hit.health -= bullet.damage
                         if hit.health <= 0:
                             enemies.remove(hit)
-                    if player.has_chain_lightning and start_enemy:
-                        segments = chain_lightning_strike(start_enemy, enemies, bullet.damage * 0.5)
-                        if segments:
-                            lightning_effects.append(
-                                {"timer": LIGHTNING_DURATION, "polylines": create_lightning_effect(segments)}
-                            )
+                    if player.chain_lightning_count and start_enemy:
+                        for _ in range(player.chain_lightning_count):
+                            segments = chain_lightning_strike(start_enemy, enemies, bullet.damage * 0.5)
+                            if segments:
+                                lightning_effects.append(
+                                    {"timer": LIGHTNING_DURATION, "polylines": create_lightning_effect(segments)}
+                                )
                     player_bullets.remove(bullet)
 
             # Collisions: bouncy balls vs enemies.
@@ -631,12 +691,13 @@ def main() -> None:
                         hit.health -= ball.damage
                         if hit.health <= 0:
                             enemies.remove(hit)
-                    if player.has_chain_lightning and start_enemy:
-                        segments = chain_lightning_strike(start_enemy, enemies, ball.damage * 0.5)
-                        if segments:
-                            lightning_effects.append(
-                                {"timer": LIGHTNING_DURATION, "polylines": create_lightning_effect(segments)}
-                            )
+                    if player.chain_lightning_count and start_enemy:
+                        for _ in range(player.chain_lightning_count):
+                            segments = chain_lightning_strike(start_enemy, enemies, ball.damage * 0.5)
+                            if segments:
+                                lightning_effects.append(
+                                    {"timer": LIGHTNING_DURATION, "polylines": create_lightning_effect(segments)}
+                                )
                     ball.on_collision()
 
             # Collisions: enemy bullets vs player.
