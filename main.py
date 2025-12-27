@@ -549,13 +549,13 @@ def build_laser(screen_rect: pygame.Rect) -> Dict[str, object]:
     end_wall = random.choice(remaining_walls)
     start = random_wall_point(screen_rect, start_wall)
     end = random_wall_point(screen_rect, end_wall)
-    return {"start": start, "end": end, "timer": LASER_DURATION, "damaged": False}
+    return {"start": start, "end": end, "timer": LASER_DURATION, "damaged_enemies": set()}
 
 
-def laser_hits_player(laser: Dict[str, object], player_rect: pygame.Rect) -> bool:
+def laser_hits_rect(laser: Dict[str, object], target_rect: pygame.Rect) -> bool:
     start = laser["start"]
     end = laser["end"]
-    expanded = player_rect.inflate(LASER_WIDTH, LASER_WIDTH)
+    expanded = target_rect.inflate(LASER_WIDTH, LASER_WIDTH)
     clipped = expanded.clipline(start, end)
     return clipped is not None
 
@@ -871,12 +871,13 @@ def main() -> None:
                 if laser["timer"] <= 0:
                     lasers.remove(laser)
                     continue
-                if not laser["damaged"] and laser_hits_player(laser, player.rect):
-                    player.health = max(0.0, player.health - LASER_DAMAGE)
-                    laser["damaged"] = True
-                    damage_flash_timer = DAMAGE_FLASH_DURATION
-                    if player.health <= 0:
-                        state = "game_over"
+                damaged_enemies = laser.setdefault("damaged_enemies", set())
+                hits = [enemy for enemy in enemies if enemy not in damaged_enemies and laser_hits_rect(laser, enemy.rect)]
+                for enemy in hits:
+                    enemy.health -= LASER_DAMAGE
+                    damaged_enemies.add(enemy)
+                    if enemy.health <= 0:
+                        enemies.remove(enemy)
 
             # Enemy shooting back.
             for enemy in enemies:
