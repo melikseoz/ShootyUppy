@@ -29,3 +29,7 @@ speed_scaling = 0.12
 health_scaling = 0.6
 count_scaling = 0.12
 max_enemy_multiplier = 3.0
+
+[laser]
+# Laser damage is scaled by (current bullet damage / starting bullet damage) * damage_ratio
+damage_ratio = 1.0
