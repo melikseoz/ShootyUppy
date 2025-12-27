@@ -56,6 +56,9 @@ CYAN: Color = (80, 226, 196)
 BACKGROUND: Color = (15, 16, 24)
 GREY: Color = (120, 120, 134)
 LIGHTNING_COLOR: Color = (142, 212, 255)
+LASER_COLOR: Color = (255, 82, 82)
+LASER_GLOW: Color = (255, 140, 140)
+LASER_DAMAGE = 1.0
 
 DAMAGE_FLASH_DURATION = 0.25
 BASIC_ENEMY_SHAPE = "rectangle"
@@ -69,6 +72,10 @@ BOUNCY_BALL_SIZE = 36
 BOUNCY_BALL_LIFETIME = 6.0
 BOUNCY_BALL_COLLISIONS = 10
 LIGHTNING_DURATION = 0.25
+LASER_DURATION = 0.35
+LASER_WIDTH = 8
+LASER_BURST_DELAY = 1.0
+LASER_INTERVAL = 0.1
 
 
 def deep_update(base: Dict, override: Dict) -> Dict:
@@ -191,6 +198,7 @@ class Player(pygame.sprite.Sprite):
         self.has_thorns = False
         self.chain_lightning_count = 0
         self.bouncy_ball_count = 0
+        self.laser_count = 0
 
     @staticmethod
     def _build_offsets(count: int, spread: float) -> List[float]:
@@ -267,6 +275,9 @@ class Player(pygame.sprite.Sprite):
 
     def add_bullet_bounce(self) -> None:
         self.bullet_bounce_count += 1
+
+    def add_laser_barrage(self) -> None:
+        self.laser_count += 1
 
     def shrink_size(self) -> None:
         self.size_scale *= 0.8
@@ -396,6 +407,11 @@ def build_powerups() -> List[Powerup]:
             "Reduce your size by 20%, making you harder to hit. Stacks.",
             lambda player: player.shrink_size(),
         ),
+        (
+            "Laser Barrage",
+            "Every second, unleash a sweeping laser volley that grows with stacks.",
+            lambda player: player.add_laser_barrage(),
+        ),
     ]
 
 
@@ -514,6 +530,34 @@ def bounce_bullet_off_walls(bullet: Bullet, screen_rect: pygame.Rect) -> bool:
         bullet.remaining_bounces -= 1
         return bullet.remaining_bounces >= 0
     return True
+
+
+def random_wall_point(rect: pygame.Rect, wall: str) -> pygame.Vector2:
+    if wall in ("top", "bottom"):
+        x = random.uniform(rect.left, rect.right)
+        y = rect.top if wall == "top" else rect.bottom
+    else:
+        y = random.uniform(rect.top, rect.bottom)
+        x = rect.left if wall == "left" else rect.right
+    return pygame.Vector2(x, y)
+
+
+def build_laser(screen_rect: pygame.Rect) -> Dict[str, object]:
+    walls = ["top", "right", "bottom", "left"]
+    start_wall = random.choice(walls)
+    remaining_walls = [wall for wall in walls if wall != start_wall]
+    end_wall = random.choice(remaining_walls)
+    start = random_wall_point(screen_rect, start_wall)
+    end = random_wall_point(screen_rect, end_wall)
+    return {"start": start, "end": end, "timer": LASER_DURATION, "damaged": False}
+
+
+def laser_hits_player(laser: Dict[str, object], player_rect: pygame.Rect) -> bool:
+    start = laser["start"]
+    end = laser["end"]
+    expanded = player_rect.inflate(LASER_WIDTH, LASER_WIDTH)
+    clipped = expanded.clipline(start, end)
+    return clipped is not None
 
 
 def draw_text(
@@ -690,6 +734,10 @@ def main() -> None:
     powerups = build_powerups()
     pending_wave: int | None = None
     damage_flash_timer = 0.0
+    lasers: List[Dict[str, object]] = []
+    next_laser_burst = LASER_BURST_DELAY
+    lasers_left_in_burst = 0
+    next_laser_in_burst = 0.0
 
     def apply_powerup_choice(choice_index: int) -> None:
         nonlocal state, enemies, pending_wave, powerup_choices, powerup_mouse_block_until, powerup_card_rects
@@ -748,6 +796,10 @@ def main() -> None:
                 powerup_mouse_block_until = 0.0
                 powerup_card_rects = []
                 damage_flash_timer = 0.0
+                lasers.clear()
+                next_laser_burst = LASER_BURST_DELAY
+                lasers_left_in_burst = 0
+                next_laser_in_burst = 0.0
             if state == "playing" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mouse_shoot_queued = True
             if event.type == pygame.KEYDOWN and event.key == pygame.K_p:
@@ -803,6 +855,28 @@ def main() -> None:
             for bullet in list(enemy_bullets):
                 if bullet.rect.top > screen_rect.height:
                     enemy_bullets.remove(bullet)
+
+            if player.laser_count > 0:
+                if now >= next_laser_burst and lasers_left_in_burst == 0:
+                    lasers_left_in_burst = 4 * player.laser_count
+                    next_laser_in_burst = now
+                    next_laser_burst = now + LASER_BURST_DELAY
+                if lasers_left_in_burst > 0 and now >= next_laser_in_burst:
+                    lasers.append(build_laser(screen_rect))
+                    lasers_left_in_burst -= 1
+                    next_laser_in_burst = now + LASER_INTERVAL
+
+            for laser in list(lasers):
+                laser["timer"] = float(laser["timer"]) - dt
+                if laser["timer"] <= 0:
+                    lasers.remove(laser)
+                    continue
+                if not laser["damaged"] and laser_hits_player(laser, player.rect):
+                    player.health = max(0.0, player.health - LASER_DAMAGE)
+                    laser["damaged"] = True
+                    damage_flash_timer = DAMAGE_FLASH_DURATION
+                    if player.health <= 0:
+                        state = "game_over"
 
             # Enemy shooting back.
             for enemy in enemies:
@@ -888,6 +962,13 @@ def main() -> None:
         player_bullets.draw(screen)
         bouncy_balls.draw(screen)
         enemy_bullets.draw(screen)
+        for laser in lasers:
+            intensity = max(0.0, min(1.0, float(laser["timer"]) / LASER_DURATION))
+            width = max(2, int(LASER_WIDTH * intensity))
+            start = laser["start"]
+            end = laser["end"]
+            pygame.draw.line(screen, LASER_GLOW, start, end, width + 4)
+            pygame.draw.line(screen, LASER_COLOR, start, end, width)
         for effect in lightning_effects:
             intensity = max(0.0, min(1.0, float(effect["timer"]) / LIGHTNING_DURATION))
             core_color = tuple(
