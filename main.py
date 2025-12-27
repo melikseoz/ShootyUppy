@@ -42,6 +42,7 @@ DEFAULT_CONFIG: Dict[str, Dict[str, float]] = {
         "count_scaling": 0.12,
         "max_enemy_multiplier": 6.0,
     },
+    "laser": {"damage_ratio": 1.0},
 }
 
 Color = Tuple[int, int, int]
@@ -58,7 +59,6 @@ GREY: Color = (120, 120, 134)
 LIGHTNING_COLOR: Color = (142, 212, 255)
 LASER_COLOR: Color = (255, 82, 82)
 LASER_GLOW: Color = (255, 140, 140)
-LASER_DAMAGE = 1.0
 
 DAMAGE_FLASH_DURATION = 0.25
 BASIC_ENEMY_SHAPE = "rectangle"
@@ -190,6 +190,7 @@ class Player(pygame.sprite.Sprite):
         self.last_shot_time = 0.0
         self.bullet_speed = float(config["bullet_speed"])
         self.bullet_damage = float(config["bullet_damage"])
+        self.starting_bullet_damage = self.bullet_damage
         self.bullet_count = int(config["bullet_count"])
         self.bullet_bounce_count = 0
         self.max_health = float(config["max_health"])
@@ -557,7 +558,13 @@ def laser_hits_rect(laser: Dict[str, object], target_rect: pygame.Rect) -> bool:
     end = laser["end"]
     expanded = target_rect.inflate(LASER_WIDTH, LASER_WIDTH)
     clipped = expanded.clipline(start, end)
-    return clipped is not None
+    return bool(clipped)
+
+
+def get_laser_damage(player: Player, laser_config: Dict[str, float]) -> float:
+    ratio = float(laser_config.get("damage_ratio", 1.0))
+    starting_damage = max(0.0001, player.starting_bullet_damage)
+    return ratio * (player.bullet_damage / starting_damage)
 
 
 def draw_text(
@@ -866,6 +873,7 @@ def main() -> None:
                     lasers_left_in_burst -= 1
                     next_laser_in_burst = now + LASER_INTERVAL
 
+            laser_damage = get_laser_damage(player, config.get("laser", {}))
             for laser in list(lasers):
                 laser["timer"] = float(laser["timer"]) - dt
                 if laser["timer"] <= 0:
@@ -874,7 +882,7 @@ def main() -> None:
                 damaged_enemies = laser.setdefault("damaged_enemies", set())
                 hits = [enemy for enemy in enemies if enemy not in damaged_enemies and laser_hits_rect(laser, enemy.rect)]
                 for enemy in hits:
-                    enemy.health -= LASER_DAMAGE
+                    enemy.health -= laser_damage
                     damaged_enemies.add(enemy)
                     if enemy.health <= 0:
                         enemies.remove(enemy)
