@@ -543,8 +543,27 @@ def random_wall_point(rect: pygame.Rect, wall: str) -> pygame.Vector2:
     return pygame.Vector2(x, y)
 
 
-def build_laser(screen_rect: pygame.Rect) -> Dict[str, object]:
+def build_laser(screen_rect: pygame.Rect, enemies: pygame.sprite.Group) -> Dict[str, object]:
     walls = ["top", "right", "bottom", "left"]
+    enemies_list = list(enemies)
+    if enemies_list:
+        target_enemy = random.choice(enemies_list)
+        target_point = pygame.Vector2(target_enemy.rect.center)
+        start_wall = random.choice(walls)
+        start = random_wall_point(screen_rect, start_wall)
+        direction = target_point - start
+        if direction.length_squared() > 0:
+            extended_end = start + direction.normalize() * max(screen_rect.width, screen_rect.height) * 2
+            clipped_line = screen_rect.clipline(start, extended_end)
+            if clipped_line:
+                clipped_start, clipped_end = (pygame.Vector2(point) for point in clipped_line)
+                if clipped_start != clipped_end:
+                    return {
+                        "start": clipped_start,
+                        "end": clipped_end,
+                        "timer": LASER_DURATION,
+                        "damaged_enemies": set(),
+                    }
     start_wall = random.choice(walls)
     remaining_walls = [wall for wall in walls if wall != start_wall]
     end_wall = random.choice(remaining_walls)
@@ -869,7 +888,7 @@ def main() -> None:
                     next_laser_in_burst = now
                     next_laser_burst = now + LASER_BURST_DELAY
                 if lasers_left_in_burst > 0 and now >= next_laser_in_burst:
-                    lasers.append(build_laser(screen_rect))
+                    lasers.append(build_laser(screen_rect, enemies))
                     lasers_left_in_burst -= 1
                     next_laser_in_burst = now + LASER_INTERVAL
 
