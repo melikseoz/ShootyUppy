@@ -114,22 +114,24 @@ class Bullet(pygame.sprite.Sprite):
     def __init__(
         self,
         pos: Tuple[float, float],
-        velocity: Tuple[float, float],
+        velocity: Tuple[float, float] | pygame.Vector2,
         color: Color,
         damage: float,
         owner: pygame.sprite.Sprite | None = None,
+        remaining_bounces: int = 0,
     ):
         super().__init__()
         self.image = pygame.Surface((6, 18))
         self.image.fill(color)
         self.rect = self.image.get_rect(center=pos)
-        self.velocity = velocity
+        self.velocity = pygame.Vector2(velocity)
         self.damage = float(damage)
         self.owner = owner
+        self.remaining_bounces = int(remaining_bounces)
 
     def update(self, dt: float) -> None:
-        self.rect.x += self.velocity[0] * dt
-        self.rect.y += self.velocity[1] * dt
+        self.rect.x += self.velocity.x * dt
+        self.rect.y += self.velocity.y * dt
 
 
 class BouncyBall(pygame.sprite.Sprite):
@@ -169,7 +171,10 @@ class Player(pygame.sprite.Sprite):
     def __init__(self, config: Dict[str, float], screen_rect: pygame.Rect):
         super().__init__()
         self.config = config
-        self.image = pygame.Surface((60, 28))
+        self.base_width = 60
+        self.base_height = 28
+        self.size_scale = 1.0
+        self.image = pygame.Surface((self.base_width, self.base_height))
         self.image.fill(GREEN)
         start_y = screen_rect.bottom - config["bottom_margin"]
         self.rect = self.image.get_rect(midbottom=(screen_rect.centerx, start_y))
@@ -179,6 +184,7 @@ class Player(pygame.sprite.Sprite):
         self.bullet_speed = float(config["bullet_speed"])
         self.bullet_damage = float(config["bullet_damage"])
         self.bullet_count = int(config["bullet_count"])
+        self.bullet_bounce_count = 0
         self.max_health = float(config["max_health"])
         self.health = float(self.max_health)
         self.diagonal_shot_stacks = 0
@@ -205,7 +211,7 @@ class Player(pygame.sprite.Sprite):
         offsets = self._build_offsets(self.bullet_count, spread)
         for offset in offsets:
             pos = (self.rect.centerx + offset, self.rect.top)
-            bullet = Bullet(pos, (0, -self.bullet_speed), BLUE, self.bullet_damage)
+            bullet = Bullet(pos, (0, -self.bullet_speed), BLUE, self.bullet_damage, remaining_bounces=self.bullet_bounce_count)
             projectiles.append(bullet)
         if self.diagonal_shot_stacks > 0:
             diag_speed = self.bullet_speed * 0.6
@@ -213,10 +219,26 @@ class Player(pygame.sprite.Sprite):
             diag_offsets = self._build_offsets(diag_per_side, spread)
             for offset in diag_offsets:
                 pos = (self.rect.centerx + offset, self.rect.top)
-                projectiles.append(Bullet(pos, (-diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
+                projectiles.append(
+                    Bullet(
+                        pos,
+                        (-diag_speed, -self.bullet_speed),
+                        BLUE,
+                        self.bullet_damage,
+                        remaining_bounces=self.bullet_bounce_count,
+                    )
+                )
             for offset in diag_offsets:
                 pos = (self.rect.centerx + offset, self.rect.top)
-                projectiles.append(Bullet(pos, (diag_speed, -self.bullet_speed), BLUE, self.bullet_damage))
+                projectiles.append(
+                    Bullet(
+                        pos,
+                        (diag_speed, -self.bullet_speed),
+                        BLUE,
+                        self.bullet_damage,
+                        remaining_bounces=self.bullet_bounce_count,
+                    )
+                )
         return projectiles
 
     def upgrade_damage(self, amount: int = 1) -> None:
@@ -242,6 +264,18 @@ class Player(pygame.sprite.Sprite):
 
     def add_bouncy_ball(self) -> None:
         self.bouncy_ball_count += 1
+
+    def add_bullet_bounce(self) -> None:
+        self.bullet_bounce_count += 1
+
+    def shrink_size(self) -> None:
+        self.size_scale *= 0.8
+        width = max(8, int(self.base_width * self.size_scale))
+        height = max(6, int(self.base_height * self.size_scale))
+        midbottom = self.rect.midbottom
+        self.image = pygame.Surface((width, height))
+        self.image.fill(GREEN)
+        self.rect = self.image.get_rect(midbottom=midbottom)
 
 
 class Enemy(pygame.sprite.Sprite):
@@ -352,6 +386,16 @@ def build_powerups() -> List[Powerup]:
             "A bouncing orb patrols the arena for half bullet damage.",
             lambda player: player.add_bouncy_ball(),
         ),
+        (
+            "Bullet Ricochet",
+            "Shots bounce off walls once. Stacks for more bounces.",
+            lambda player: player.add_bullet_bounce(),
+        ),
+        (
+            "Shrink",
+            "Reduce your size by 20%, making you harder to hit. Stacks.",
+            lambda player: player.shrink_size(),
+        ),
     ]
 
 
@@ -445,6 +489,31 @@ def ensure_bouncy_ball_active(
         # Keep the ball on screen if the player is near the edge.
         ball.rect.clamp_ip(screen_rect)
         bouncy_balls.add(ball)
+
+
+def bounce_bullet_off_walls(bullet: Bullet, screen_rect: pygame.Rect) -> bool:
+    collided = False
+    if bullet.rect.left <= screen_rect.left:
+        bullet.rect.left = screen_rect.left
+        bullet.velocity.x = abs(bullet.velocity.x)
+        collided = True
+    elif bullet.rect.right >= screen_rect.right:
+        bullet.rect.right = screen_rect.right
+        bullet.velocity.x = -abs(bullet.velocity.x)
+        collided = True
+    if bullet.rect.top <= screen_rect.top:
+        bullet.rect.top = screen_rect.top
+        bullet.velocity.y = abs(bullet.velocity.y)
+        collided = True
+    elif bullet.rect.bottom >= screen_rect.bottom:
+        bullet.rect.bottom = screen_rect.bottom
+        bullet.velocity.y = -abs(bullet.velocity.y)
+        collided = True
+
+    if collided:
+        bullet.remaining_bounces -= 1
+        return bullet.remaining_bounces >= 0
+    return True
 
 
 def draw_text(
@@ -729,7 +798,7 @@ def main() -> None:
 
             # Remove bullets off-screen.
             for bullet in list(player_bullets):
-                if bullet.rect.bottom < 0:
+                if not bounce_bullet_off_walls(bullet, screen_rect):
                     player_bullets.remove(bullet)
             for bullet in list(enemy_bullets):
                 if bullet.rect.top > screen_rect.height:
